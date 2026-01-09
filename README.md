@@ -80,6 +80,119 @@ Proximity Service — это backend-сервис для поиска ближа
 6. Подгружаются данные business
 7. Формируется ответ
 
+
+## Diagrams
+
+### C4 Level 1 — System Context
+
+```mermaid
+flowchart LR
+  U[User / Mobile App] -->|HTTPS| G[API Gateway / Load Balancer]
+  G -->|/v1/search/nearby| LBS[LBS: Nearby Search Service]
+  G -->|/v1/businesses/*| BS[Business Service]
+
+  LBS -->|read| GI[Geo Index Storage]
+  LBS -->|read (batch)| BR[(Business Read Replica)]
+  BS -->|write| P[(Primary DB)]
+  P -->|replication| BR
+
+  LBS <-->|cache| R[(Redis Cache)]
+  BS <-->|cache| R
+```
+
+### C4 Level 2 — Container View (Target)
+
+```mermaid
+flowchart TB
+  subgraph Edge["Edge"]
+    G[API Gateway / LB]
+  end
+
+  subgraph Services["Services (stateless)"]
+    LBS[LBS Service]
+    BS[Business Service]
+    OUT[Outbox Publisher]
+    CON[GeoIndex Consumer]
+  end
+
+  subgraph Data["Data Stores"]
+    P[(Primary DB)]
+    RR[(Read Replicas)]
+    R[(Redis)]
+    Q[(Message Broker)]
+  end
+
+  G --> LBS
+  G --> BS
+
+  BS --> P
+  P --> RR
+
+  LBS --> RR
+  LBS --> R
+
+  BS --> OUT
+  OUT --> Q
+  Q --> CON
+  CON --> R
+  CON --> P
+```
+
+### Sequence — Nearby Search
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant G as API Gateway
+  participant L as LBS Service
+  participant GI as Geo Index
+  participant DB as Read Replica DB
+  participant R as Redis Cache
+
+  C->>G: GET /v1/search/nearby?lat&lon&radius
+  G->>L: forward request
+  L->>L: validate & cap radius
+  L->>L: geohash(lat,lon) + neighbors\nprecision by radius
+  L->>GI: fetch candidate business_ids by geohash prefixes
+  GI-->>L: candidate ids (+coords if stored)
+  L->>L: haversine distance filter\nsort by distance\nlimit N
+  L->>R: MGET business summaries (optional)
+  R-->>L: cache hits/misses
+  L->>DB: batch fetch missing business summaries
+  DB-->>L: rows
+  L-->>G: response (total + businesses)
+  G-->>C: 200 OK
+```
+
+### Sequence — Business Upsert (Target with Outbox)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client/Admin
+  participant G as API Gateway
+  participant B as Business Service
+  participant P as Primary DB
+  participant O as Outbox
+  participant Q as Message Broker
+  participant X as GeoIndex Consumer
+  participant R as Redis / GeoIndex Store
+
+  C->>G: POST/PUT /v1/businesses
+  G->>B: forward
+  B->>P: upsert business (tx)
+  B->>O: write outbox event (same tx)
+  P-->>B: commit
+  B-->>G: 200/201
+
+  O->>Q: publish BusinessChanged
+  Q->>X: deliver event
+  X->>R: update geo-index + invalidate caches
+  X-->>Q: ack
+```
+
+
 ---
 
 ## API Specification
@@ -232,3 +345,69 @@ Index:
 
 Данный README является единственным источником требований и архитектуры.
 Проект должен быть сгенерирован строго в соответствии с данным описанием.
+
+---
+
+## Architecture Decision Records (ADRs)
+
+- [ADR-0001: Geo Indexing Strategy — Geohash + Neighbors](docs/adr/0001-geo-indexing-strategy.md)
+- [ADR-0002: Consistency Between Business Data and Geo Index — Outbox Pattern](docs/adr/0002-outbox-consistency.md)
+- [ADR-0003: Service Decomposition — Modular Monolith First, Split Later](docs/adr/0003-service-decomposition.md)
+- [ADR-0004: Caching Strategy — Business Details and Search-Aware Keys](docs/adr/0004-caching-strategy.md)
+- [ADR-0005: Storage Choices — PostgreSQL + Optional Redis, PostGIS as Future Option](docs/adr/0005-storage-choices.md)
+
+---
+
+## Acceptance Criteria
+
+### API correctness
+- `GET /v1/search/nearby` validates inputs:
+  - latitude ∈ [-90, 90], longitude ∈ [-180, 180]
+  - radius default = 5000, max = 20000; values outside range return 400
+- Nearby search returns only businesses with `distanceMeters <= radius`
+- Results are sorted by `distanceMeters` ascending (tie-breaker: `id` ascending)
+- CRUD endpoints return proper HTTP status codes:
+  - POST: 201 + created entity id
+  - GET existing: 200; missing: 404
+  - PUT existing: 200; missing: 404 (or 404/409—choose one and document)
+  - DELETE existing: 204; missing: 404
+
+### Geo-index correctness (MVP)
+- On create/update with changed coordinates, `geo_index.geohash` is recomputed and persisted
+- Nearby search expands to the current cell + 8 neighbors for the chosen precision
+- Final filtering uses Haversine distance (not Manhattan / not planar approximation)
+
+### Persistence and migrations
+- Flyway/Liquibase creates `business` and `geo_index` tables on startup
+- `geo_index` has an index on `geohash` for prefix queries
+- Local `docker-compose` starts required dependencies
+
+### Testing
+- Unit tests:
+  - geohash precision mapping
+  - neighbor expansion (returns 9 cells total)
+  - haversine correctness on known coordinate pairs
+- Integration tests (Testcontainers recommended):
+  - CRUD happy paths
+  - nearby search returns deterministic results for seeded dataset
+
+### Observability (minimum)
+- Structured logs for API requests (method/path/status/latency)
+- Basic metrics endpoint (Spring Actuator) enabled
+
+---
+
+## Codex / Generator Checklist (Implementation Constraints)
+
+To ensure deterministic generation, implement the following explicitly:
+- Java 17, Spring Boot 3, Maven
+- Layering: `adapter`, `application`, `domain`, `infrastructure`
+- Controllers only in `adapter`
+- Business logic (use cases) only in `application`
+- Distance computation as a `domain` service (`DistanceCalculator`)
+- Persistence via Spring Data JPA in `infrastructure`
+- DTOs distinct from entities; mapping via MapStruct (preferred) or manual mappers
+- Validation via Jakarta Bean Validation
+- OpenAPI via springdoc-openapi, producing `/v3/api-docs` and Swagger UI
+- Provide `docker-compose.yml` for Postgres + Redis (Redis optional but included)
+- Provide minimal seed data script or test fixture for local verification

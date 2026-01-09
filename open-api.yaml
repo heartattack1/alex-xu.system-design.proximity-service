@@ -1,0 +1,271 @@
+openapi: 3.0.3
+info:
+  title: Proximity Service API
+  version: 1.0.0
+  description: API for Nearby Search (Proximity Service) and Business CRUD.
+servers:
+- url: http://localhost:8080
+tags:
+- name: Search
+  description: Nearby search endpoints
+- name: Business
+  description: Business CRUD endpoints
+paths:
+  /v1/search/nearby:
+    get:
+      tags:
+      - Search
+      summary: Search nearby businesses
+      parameters:
+      - name: latitude
+        in: query
+        required: true
+        schema:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+      - name: longitude
+        in: query
+        required: true
+        schema:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+      - name: radius
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 20000
+          default: 5000
+        description: Search radius in meters. Default 5000. Max 20000.
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 50
+        description: Max number of results to return (after filtering/sorting).
+      responses:
+        '200':
+          description: Nearby businesses found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NearbySearchResponse'
+        '400':
+          description: Invalid query parameters
+        '500':
+          description: Internal server error
+  /v1/businesses:
+    post:
+      tags:
+      - Business
+      summary: Create a business
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BusinessUpsertRequest'
+      responses:
+        '201':
+          description: Business created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessIdResponse'
+        '400':
+          description: Validation error
+        '500':
+          description: Internal server error
+  /v1/businesses/{id}:
+    get:
+      tags:
+      - Business
+      summary: Get business details
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Business details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessResponse'
+        '404':
+          description: Business not found
+        '500':
+          description: Internal server error
+    put:
+      tags:
+      - Business
+      summary: Update a business
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BusinessUpsertRequest'
+      responses:
+        '200':
+          description: Business updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessResponse'
+        '400':
+          description: Validation error
+        '404':
+          description: Business not found
+        '500':
+          description: Internal server error
+    delete:
+      tags:
+      - Business
+      summary: Delete a business
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Business deleted
+        '404':
+          description: Business not found
+        '500':
+          description: Internal server error
+components:
+  schemas:
+    NearbySearchResponse:
+      type: object
+      required:
+      - total
+      - businesses
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        businesses:
+          type: array
+          items:
+            $ref: '#/components/schemas/BusinessSummary'
+    BusinessSummary:
+      type: object
+      required:
+      - id
+      - name
+      - latitude
+      - longitude
+      - distanceMeters
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+        distanceMeters:
+          type: integer
+          minimum: 0
+    BusinessUpsertRequest:
+      type: object
+      required:
+      - name
+      - latitude
+      - longitude
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+        address:
+          type: string
+          maxLength: 500
+        city:
+          type: string
+          maxLength: 100
+        state:
+          type: string
+          maxLength: 100
+        country:
+          type: string
+          maxLength: 100
+    BusinessResponse:
+      type: object
+      required:
+      - id
+      - name
+      - latitude
+      - longitude
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        address:
+          type: string
+        city:
+          type: string
+        state:
+          type: string
+        country:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+    BusinessIdResponse:
+      type: object
+      required:
+      - id
+      properties:
+        id:
+          type: string
+          format: uuid
